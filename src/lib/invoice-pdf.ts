@@ -191,5 +191,30 @@ export function generateInvoicePDF(inv: Invoice) {
   doc.text(`Proprietor: ${BUSINESS.proprietor}`, L, fy + 44);
 
   const safeName = (inv.customerName || "invoice").replace(/[^a-z0-9]/gi, "_");
-  doc.save(`KTD${inv.invoiceNo}_${safeName}.pdf`);
+  const filename = `KTD${inv.invoiceNo}_${safeName}.pdf`;
+
+  // Use blob + anchor so it works on mobile browsers (where doc.save can fail silently)
+  try {
+    const blob = doc.output("blob");
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    a.rel = "noopener";
+    a.target = "_blank";
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    // Fallback for iOS Safari: open in a new tab so the user can save/share
+    setTimeout(() => {
+      try {
+        window.open(url, "_blank");
+      } catch {
+        /* noop */
+      }
+      setTimeout(() => URL.revokeObjectURL(url), 30_000);
+    }, 250);
+  } catch {
+    doc.save(filename);
+  }
 }

@@ -85,6 +85,10 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
       { property: "og:type", content: "website" },
       { name: "twitter:card", content: "summary" },
       { name: "twitter:site", content: "@Lovable" },
+      { name: "twitter:title", content: "Khushdil Tent & DJ — Invoice" },
+      { name: "twitter:description", content: "Simple invoice billing for Khushdil Tent & DJ events." },
+      { property: "og:image", content: "https://pub-bb2e103a32db4e198524a2e9ed8f35b4.r2.dev/a8315a0d-b9eb-4b22-b341-81859062e72a/id-preview-1e100692--9a083799-054d-40c3-afe1-2b84bf5db7a8.lovable.app-1781692285742.png" },
+      { name: "twitter:image", content: "https://pub-bb2e103a32db4e198524a2e9ed8f35b4.r2.dev/a8315a0d-b9eb-4b22-b341-81859062e72a/id-preview-1e100692--9a083799-054d-40c3-afe1-2b84bf5db7a8.lovable.app-1781692285742.png" },
     ],
     links: [
       { rel: "stylesheet", href: appCss },

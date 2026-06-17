@@ -190,10 +190,17 @@ function buildInvoiceDoc(inv: Invoice) {
   doc.text(`A. ${BUSINESS.address}`, L, fy + 30);
   doc.text(`Proprietor: ${BUSINESS.proprietor}`, L, fy + 44);
 
-  const safeName = (inv.customerName || "invoice").replace(/[^a-z0-9]/gi, "_");
-  const filename = `KTD${inv.invoiceNo}_${safeName}.pdf`;
+  return doc;
+}
 
-  // Use blob + anchor (no target=_blank — would navigate inside iframe previews)
+function invoiceFilename(inv: Invoice) {
+  const safeName = (inv.customerName || "invoice").replace(/[^a-z0-9]/gi, "_");
+  return `KTD${inv.invoiceNo}_${safeName}.pdf`;
+}
+
+export function generateInvoicePDF(inv: Invoice) {
+  const doc = buildInvoiceDoc(inv);
+  const filename = invoiceFilename(inv);
   try {
     const blob = doc.output("blob");
     const url = URL.createObjectURL(blob);

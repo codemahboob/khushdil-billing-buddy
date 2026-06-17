@@ -1,107 +1,165 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import {
-  DEFAULT_SERVICES,
+  BUILTIN_SERVICES,
   type Invoice,
+  type PresetItem,
   type ServiceLine,
-  deleteInvoice,
+  emptyBin,
+  formatInvoiceNo,
+  getAllPresets,
+  loadCustomItems,
+  loadDeleted,
   loadInvoices,
+  nextInvoiceNo,
+  permanentlyDelete,
+  restoreInvoice,
+  saveCustomItems,
   saveInvoice,
+  softDeleteInvoice,
 } from "@/lib/invoice-storage";
 import { generateInvoicePDF } from "@/lib/invoice-pdf";
+import { BUSINESS } from "@/lib/business";
 
 export const Route = createFileRoute("/")({
   head: () => ({
     meta: [
       { title: "Khushdil Tent & DJ — Invoice" },
-      { name: "description", content: "Create invoices and track upcoming events for Khushdil Tent & DJ." },
+      { name: "description", content: "Create invoices and track events for Khushdil Tent & DJ." },
     ],
   }),
   component: App,
 });
 
-type Step = "home" | "customer" | "services" | "review";
+type View =
+  | { name: "home" }
+  | { name: "customer" }
+  | { name: "services" }
+  | { name: "review" }
+  | { name: "detail"; id: string }
+  | { name: "bin" }
+  | { name: "manage" };
 
 function App() {
-  const [step, setStep] = useState<Step>("home");
+  const [view, setView] = useState<View>({ name: "home" });
   const [draft, setDraft] = useState<Invoice>(() => emptyInvoice());
   const [invoices, setInvoices] = useState<Invoice[]>([]);
+  const [deleted, setDeleted] = useState<Invoice[]>([]);
   const [mounted, setMounted] = useState(false);
 
-  useEffect(() => {
+  const refresh = () => {
     setInvoices(loadInvoices());
+    setDeleted(loadDeleted());
+  };
+
+  useEffect(() => {
+    refresh();
     setMounted(true);
   }, []);
 
   const reset = () => {
     setDraft(emptyInvoice());
-    setStep("home");
+    setView({ name: "home" });
   };
 
   const finalize = () => {
-    const total = draft.lines.reduce((s, l) => s + l.rate * l.qty, 0) - draft.discount;
-    const final = { ...draft, total };
+    const subtotal = draft.lines.reduce((s, l) => s + l.rate * l.qty, 0);
+    const total = subtotal - draft.discount + (draft.tax || 0);
+    const final: Invoice = { ...draft, total };
     saveInvoice(final);
     generateInvoicePDF(final);
-    setInvoices(loadInvoices());
+    refresh();
     reset();
+  };
+
+  const startNew = () => {
+    setDraft(emptyInvoice());
+    setView({ name: "customer" });
   };
 
   return (
     <div className="min-h-screen bg-background text-foreground">
       <div className="mx-auto w-full max-w-xl px-5 pb-32 pt-10">
-        <Header />
+        <Header
+          onMenu={(action) => {
+            if (action === "manage") setView({ name: "manage" });
+            if (action === "bin") setView({ name: "bin" });
+          }}
+        />
 
         <AnimatePresence mode="wait">
-          {step === "home" && (
+          {view.name === "home" && (
             <Pane key="home">
               <HomeScreen
-                onAdd={() => {
-                  setDraft(emptyInvoice());
-                  setStep("customer");
-                }}
+                onAdd={startNew}
+                onOpen={(inv) => setView({ name: "detail", id: inv.id })}
                 invoices={mounted ? invoices : []}
-                onOpen={(inv) => generateInvoicePDF(inv)}
-                onDelete={(id) => {
-                  deleteInvoice(id);
-                  setInvoices(loadInvoices());
-                }}
               />
             </Pane>
           )}
-          {step === "customer" && (
+          {view.name === "customer" && (
             <Pane key="customer">
               <CustomerStep
                 draft={draft}
-                onBack={() => setStep("home")}
+                onBack={() => setView({ name: "home" })}
                 onNext={(d) => {
                   setDraft(d);
-                  setStep("services");
+                  setView({ name: "services" });
                 }}
               />
             </Pane>
           )}
-          {step === "services" && (
+          {view.name === "services" && (
             <Pane key="services">
               <ServicesStep
                 draft={draft}
-                onBack={() => setStep("customer")}
+                onBack={() => setView({ name: "customer" })}
                 onNext={(d) => {
                   setDraft(d);
-                  setStep("review");
+                  setView({ name: "review" });
                 }}
               />
             </Pane>
           )}
-          {step === "review" && (
+          {view.name === "review" && (
             <Pane key="review">
               <ReviewStep
                 draft={draft}
-                onBack={() => setStep("services")}
+                onBack={() => setView({ name: "services" })}
                 onConfirm={finalize}
                 onDiscount={(v) => setDraft({ ...draft, discount: v })}
+                onTax={(v) => setDraft({ ...draft, tax: v })}
               />
+            </Pane>
+          )}
+          {view.name === "detail" && (
+            <Pane key={`detail-${view.id}`}>
+              <DetailScreen
+                inv={
+                  invoices.find((i) => i.id === view.id) ||
+                  deleted.find((i) => i.id === view.id)
+                }
+                onBack={() => setView({ name: "home" })}
+                onChanged={() => {
+                  refresh();
+                  setView({ name: "home" });
+                }}
+              />
+            </Pane>
+          )}
+          {view.name === "bin" && (
+            <Pane key="bin">
+              <BinScreen
+                items={deleted}
+                onBack={() => setView({ name: "home" })}
+                onChange={refresh}
+              />
+            </Pane>
+          )}
+          {view.name === "manage" && (
+            <Pane key="manage">
+              <ManageItemsScreen onBack={() => setView({ name: "home" })} />
             </Pane>
           )}
         </AnimatePresence>
@@ -110,19 +168,79 @@ function App() {
   );
 }
 
-function Header() {
+/* ---------- Header with kebab menu ---------- */
+
+function Header({ onMenu }: { onMenu: (a: "manage" | "bin") => void }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const close = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener("mousedown", close);
+    return () => document.removeEventListener("mousedown", close);
+  }, []);
+
   return (
     <div className="mb-8 flex items-center justify-between">
       <div>
         <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
-          Khushdil Tent & DJ
+          {BUSINESS.name}
         </p>
         <h1 className="mt-1 text-2xl font-bold text-foreground">Invoices</h1>
       </div>
-      <div className="flex h-10 w-10 items-center justify-center rounded-full bg-accent text-accent-foreground font-bold">
-        K
+      <div className="relative flex items-center gap-2" ref={ref}>
+        <div className="flex h-10 w-10 items-center justify-center rounded-full bg-accent text-accent-foreground font-bold">
+          K
+        </div>
+        <button
+          onClick={() => setOpen((v) => !v)}
+          className="flex h-10 w-10 items-center justify-center rounded-full text-foreground transition hover:bg-secondary"
+          aria-label="Menu"
+        >
+          <DotsIcon />
+        </button>
+        <AnimatePresence>
+          {open && (
+            <motion.div
+              initial={{ opacity: 0, y: -4, scale: 0.98 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: -4, scale: 0.98 }}
+              transition={{ duration: 0.15 }}
+              className="absolute right-0 top-12 z-20 w-52 overflow-hidden rounded-2xl border border-border bg-card shadow-pop"
+            >
+              <MenuItem
+                onClick={() => {
+                  setOpen(false);
+                  onMenu("manage");
+                }}
+              >
+                Add new item
+              </MenuItem>
+              <MenuItem
+                onClick={() => {
+                  setOpen(false);
+                  onMenu("bin");
+                }}
+              >
+                Recycle bin
+              </MenuItem>
+            </motion.div>
+          )}
+        </AnimatePresence>
       </div>
     </div>
+  );
+}
+
+function MenuItem({ onClick, children }: { onClick: () => void; children: React.ReactNode }) {
+  return (
+    <button
+      onClick={onClick}
+      className="block w-full px-4 py-3 text-left text-sm font-medium text-foreground transition hover:bg-secondary"
+    >
+      {children}
+    </button>
   );
 }
 
@@ -145,12 +263,10 @@ function HomeScreen({
   onAdd,
   invoices,
   onOpen,
-  onDelete,
 }: {
   onAdd: () => void;
   invoices: Invoice[];
   onOpen: (i: Invoice) => void;
-  onDelete: (id: string) => void;
 }) {
   const upcoming = useMemo(
     () =>
@@ -186,16 +302,14 @@ function HomeScreen({
         {upcoming.length === 0 ? (
           <EmptyHint text="Tap Add Name to create your first invoice." />
         ) : (
-          upcoming.map((i) => (
-            <InvoiceCard key={i.id} inv={i} onOpen={onOpen} onDelete={onDelete} upcoming />
-          ))
+          upcoming.map((i) => <InvoiceCard key={i.id} inv={i} onOpen={onOpen} upcoming />)
         )}
       </Section>
 
       {past.length > 0 && (
         <Section title="Past" count={past.length}>
           {past.map((i) => (
-            <InvoiceCard key={i.id} inv={i} onOpen={onOpen} onDelete={onDelete} />
+            <InvoiceCard key={i.id} inv={i} onOpen={onOpen} />
           ))}
         </Section>
       )}
@@ -226,44 +340,371 @@ function EmptyHint({ text }: { text: string }) {
 function InvoiceCard({
   inv,
   onOpen,
-  onDelete,
   upcoming,
 }: {
   inv: Invoice;
   onOpen: (i: Invoice) => void;
-  onDelete: (id: string) => void;
   upcoming?: boolean;
 }) {
   const date = new Date(inv.eventDate);
   return (
-    <div className="group flex items-center gap-4 rounded-2xl bg-card p-4 shadow-soft transition hover:shadow-pop">
+    <button
+      onClick={() => onOpen(inv)}
+      className="group flex w-full items-center gap-4 rounded-2xl bg-card p-4 text-left shadow-soft transition hover:shadow-pop"
+    >
       <div className="flex h-12 w-12 flex-col items-center justify-center rounded-xl bg-secondary text-secondary-foreground">
         <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
           {date.toLocaleDateString(undefined, { month: "short" })}
         </span>
         <span className="text-lg font-bold leading-none">{date.getDate()}</span>
       </div>
-      <button onClick={() => onOpen(inv)} className="flex-1 text-left">
-        <div className="font-semibold">{inv.customerName}</div>
+      <div className="flex-1 min-w-0">
+        <div className="truncate font-semibold">{inv.customerName}</div>
         <div className="text-xs text-muted-foreground">
+          {formatInvoiceNo(inv.invoiceNo)} ·{" "}
           {upcoming ? formatRelative(date) : date.toLocaleDateString()} · Rs {inv.total}
         </div>
-      </button>
-      <button
-        onClick={() => onOpen(inv)}
-        className="hidden rounded-full bg-secondary px-3 py-1.5 text-xs font-semibold text-secondary-foreground transition hover:bg-accent hover:text-accent-foreground sm:inline-flex"
-      >
-        PDF
-      </button>
-      <button
-        onClick={() => {
-          if (confirm("Delete this invoice?")) onDelete(inv.id);
-        }}
-        className="text-muted-foreground transition hover:text-destructive"
-        aria-label="Delete"
-      >
-        <TrashIcon />
-      </button>
+      </div>
+      <ChevronRight />
+    </button>
+  );
+}
+
+/* ---------- Detail view (saved event) ---------- */
+
+function DetailScreen({
+  inv,
+  onBack,
+  onChanged,
+}: {
+  inv?: Invoice;
+  onBack: () => void;
+  onChanged: () => void;
+}) {
+  const [confirmStep, setConfirmStep] = useState(0);
+  const [confirmText, setConfirmText] = useState("");
+
+  if (!inv) {
+    return (
+      <div>
+        <BackButton onClick={onBack} />
+        <p className="mt-4 text-muted-foreground">Event not found.</p>
+      </div>
+    );
+  }
+
+  const subtotal = inv.lines.reduce((s, l) => s + l.rate * l.qty, 0);
+  const isDeleted = !!inv.deletedAt;
+
+  const tryDelete = () => {
+    if (confirmStep === 0) {
+      setConfirmStep(1);
+      return;
+    }
+    if (confirmStep === 1) {
+      setConfirmStep(2);
+      return;
+    }
+    // Step 2: require typing DELETE
+    if (confirmText.trim().toUpperCase() !== "DELETE") return;
+    softDeleteInvoice(inv.id);
+    onChanged();
+  };
+
+  return (
+    <div>
+      <BackButton onClick={onBack} />
+
+      <div className="mt-4 mb-6">
+        <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-primary">
+          {formatInvoiceNo(inv.invoiceNo)}
+        </p>
+        <h2 className="mt-1 text-3xl font-bold tracking-tight">{inv.customerName}</h2>
+        <p className="mt-1 text-sm text-muted-foreground">
+          Event ·{" "}
+          {new Date(inv.eventDate).toLocaleDateString(undefined, {
+            day: "numeric",
+            month: "long",
+            year: "numeric",
+          })}
+        </p>
+        {inv.phone && <p className="text-xs text-muted-foreground">Phone: {inv.phone}</p>}
+        {inv.address && <p className="text-xs text-muted-foreground">{inv.address}</p>}
+      </div>
+
+      <div className="mb-3 text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
+        Items
+      </div>
+      <div className="space-y-2">
+        {inv.lines.map((l) => (
+          <div key={l.id} className="rounded-2xl bg-card p-4 shadow-soft">
+            <div className="flex items-baseline justify-between gap-3">
+              <div className="min-w-0">
+                <div className="truncate font-semibold">{l.name}</div>
+                <div className="text-xs text-muted-foreground">
+                  {l.qty} × Rs {l.rate} · {l.unit}
+                </div>
+              </div>
+              <div className="font-bold">Rs {l.qty * l.rate}</div>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      <div className="mt-6 rounded-2xl bg-card p-5 shadow-soft">
+        <Row label="Subtotal" value={`Rs ${subtotal}`} />
+        {inv.discount > 0 && <Row label="Discount" value={`- Rs ${inv.discount}`} />}
+        {inv.tax > 0 && <Row label="Taxes" value={`Rs ${inv.tax}`} />}
+        <div className="mt-3 flex items-baseline justify-between border-t border-border pt-3">
+          <span className="text-sm font-semibold">Total</span>
+          <span className="text-2xl font-extrabold">Rs {inv.total}</span>
+        </div>
+      </div>
+
+      {!isDeleted && (
+        <div className="mt-6 space-y-3">
+          <button
+            onClick={() => generateInvoicePDF(inv)}
+            className="w-full rounded-full bg-primary py-3.5 text-base font-semibold text-primary-foreground shadow-pop"
+          >
+            Download PDF
+          </button>
+
+          <div className="rounded-2xl border border-destructive/20 bg-destructive/5 p-4">
+            <div className="mb-2 text-sm font-semibold text-destructive">Danger zone</div>
+            {confirmStep < 2 ? (
+              <button
+                onClick={tryDelete}
+                className="w-full rounded-full bg-secondary py-2.5 text-sm font-semibold text-secondary-foreground transition hover:bg-destructive/10 hover:text-destructive"
+              >
+                {confirmStep === 0
+                  ? "Move event to recycle bin"
+                  : "Tap again to confirm move to bin"}
+              </button>
+            ) : (
+              <div>
+                <p className="mb-2 text-xs text-muted-foreground">
+                  Type <span className="font-mono font-bold">DELETE</span> to move this event to the recycle bin.
+                </p>
+                <input
+                  autoFocus
+                  value={confirmText}
+                  onChange={(e) => setConfirmText(e.target.value)}
+                  placeholder="DELETE"
+                  className="input-base mb-2"
+                />
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => {
+                      setConfirmStep(0);
+                      setConfirmText("");
+                    }}
+                    className="flex-1 rounded-full bg-secondary py-2.5 text-sm font-semibold"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    disabled={confirmText.trim().toUpperCase() !== "DELETE"}
+                    onClick={tryDelete}
+                    className="flex-1 rounded-full bg-destructive py-2.5 text-sm font-semibold text-destructive-foreground disabled:opacity-40"
+                  >
+                    Move to bin
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ---------- Bin ---------- */
+
+function BinScreen({
+  items,
+  onBack,
+  onChange,
+}: {
+  items: Invoice[];
+  onBack: () => void;
+  onChange: () => void;
+}) {
+  return (
+    <div>
+      <BackButton onClick={onBack} />
+      <div className="mt-4 mb-6 flex items-baseline justify-between">
+        <div>
+          <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-primary">
+            Recycle bin
+          </p>
+          <h2 className="mt-1 text-3xl font-bold tracking-tight">Deleted events</h2>
+        </div>
+        {items.length > 0 && (
+          <button
+            onClick={() => {
+              if (confirm("Permanently delete everything in the bin?")) {
+                emptyBin();
+                onChange();
+              }
+            }}
+            className="text-xs font-semibold text-destructive"
+          >
+            Empty bin
+          </button>
+        )}
+      </div>
+
+      {items.length === 0 ? (
+        <EmptyHint text="Nothing here. Deleted events show up in the bin." />
+      ) : (
+        <div className="space-y-2">
+          {items.map((i) => (
+            <div key={i.id} className="rounded-2xl bg-card p-4 shadow-soft">
+              <div className="flex items-baseline justify-between">
+                <div className="min-w-0">
+                  <div className="truncate font-semibold">{i.customerName}</div>
+                  <div className="text-xs text-muted-foreground">
+                    {formatInvoiceNo(i.invoiceNo)} · Rs {i.total}
+                  </div>
+                </div>
+                <div className="text-[10px] text-muted-foreground">
+                  {i.deletedAt && new Date(i.deletedAt).toLocaleDateString()}
+                </div>
+              </div>
+              <div className="mt-3 flex gap-2">
+                <button
+                  onClick={() => {
+                    restoreInvoice(i.id);
+                    onChange();
+                  }}
+                  className="flex-1 rounded-full bg-secondary py-2 text-xs font-semibold"
+                >
+                  Restore
+                </button>
+                <button
+                  onClick={() => {
+                    if (confirm("Permanently delete this event?")) {
+                      permanentlyDelete(i.id);
+                      onChange();
+                    }
+                  }}
+                  className="flex-1 rounded-full bg-destructive/10 py-2 text-xs font-semibold text-destructive"
+                >
+                  Delete forever
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ---------- Manage items (presets) ---------- */
+
+function ManageItemsScreen({ onBack }: { onBack: () => void }) {
+  const [custom, setCustom] = useState<PresetItem[]>(() => loadCustomItems());
+  const [name, setName] = useState("");
+  const [rate, setRate] = useState("");
+  const [unit, setUnit] = useState("fixed");
+
+  const commit = (next: PresetItem[]) => {
+    setCustom(next);
+    saveCustomItems(next);
+  };
+
+  const add = () => {
+    if (!name.trim() || !(Number(rate) > 0)) return;
+    commit([...custom, { name: name.trim(), rate: Number(rate), unit }]);
+    setName("");
+    setRate("");
+    setUnit("fixed");
+  };
+
+  return (
+    <div>
+      <BackButton onClick={onBack} />
+      <div className="mt-4 mb-6">
+        <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-primary">
+          Catalog
+        </p>
+        <h2 className="mt-1 text-3xl font-bold tracking-tight">Items</h2>
+        <p className="mt-1 text-sm text-muted-foreground">
+          Add reusable services that show up under Quick Add.
+        </p>
+      </div>
+
+      <div className="mb-3 text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
+        Built-in
+      </div>
+      <div className="mb-6 grid grid-cols-2 gap-2">
+        {BUILTIN_SERVICES.map((s) => (
+          <div key={s.name} className="rounded-2xl bg-secondary p-3">
+            <div className="text-sm font-semibold">{s.name}</div>
+            <div className="text-xs text-muted-foreground">Rs {s.rate} · {s.unit}</div>
+          </div>
+        ))}
+      </div>
+
+      <div className="mb-3 text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
+        Your items
+      </div>
+      <div className="mb-4 space-y-2">
+        {custom.length === 0 ? (
+          <EmptyHint text="No custom items yet." />
+        ) : (
+          custom.map((s, i) => (
+            <div key={i} className="flex items-center justify-between rounded-2xl bg-card p-3 shadow-soft">
+              <div>
+                <div className="text-sm font-semibold">{s.name}</div>
+                <div className="text-xs text-muted-foreground">Rs {s.rate} · {s.unit}</div>
+              </div>
+              <button
+                onClick={() => commit(custom.filter((_, j) => j !== i))}
+                className="text-muted-foreground hover:text-destructive"
+                aria-label="Remove"
+              >
+                <TrashIcon />
+              </button>
+            </div>
+          ))
+        )}
+      </div>
+
+      <div className="rounded-2xl bg-card p-4 shadow-soft">
+        <div className="mb-3 text-sm font-semibold">Add new item</div>
+        <input
+          placeholder="Item name (e.g. LED Light)"
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          className="input-base mb-2"
+        />
+        <div className="mb-3 grid grid-cols-2 gap-2">
+          <input
+            placeholder="Rate (Rs)"
+            inputMode="numeric"
+            value={rate}
+            onChange={(e) => setRate(e.target.value.replace(/[^0-9]/g, ""))}
+            className="input-base"
+          />
+          <select value={unit} onChange={(e) => setUnit(e.target.value)} className="input-base">
+            <option value="fixed">fixed</option>
+            <option value="per piece">per piece</option>
+            <option value="set">set</option>
+            <option value="per hour">per hour</option>
+          </select>
+        </div>
+        <button
+          onClick={add}
+          disabled={!name.trim() || !(Number(rate) > 0)}
+          className="w-full rounded-full bg-primary py-2.5 text-sm font-semibold text-primary-foreground disabled:opacity-40"
+        >
+          Save item
+        </button>
+      </div>
     </div>
   );
 }
@@ -282,17 +723,12 @@ function CustomerStep({
   const [name, setName] = useState(draft.customerName);
   const [date, setDate] = useState(draft.eventDate);
   const [phone, setPhone] = useState(draft.phone ?? "");
+  const [address, setAddress] = useState(draft.address ?? "");
 
   const valid = name.trim().length > 0 && !!date;
 
   return (
-    <StepShell
-      step={1}
-      total={3}
-      title="Customer details"
-      subtitle="Who is the event for?"
-      onBack={onBack}
-    >
+    <StepShell step={1} total={3} title="Customer details" subtitle="Who is the event for?" onBack={onBack}>
       <Field label="Customer name">
         <input
           autoFocus
@@ -303,12 +739,7 @@ function CustomerStep({
         />
       </Field>
       <Field label="Event date">
-        <input
-          type="date"
-          value={date}
-          onChange={(e) => setDate(e.target.value)}
-          className="input-base"
-        />
+        <input type="date" value={date} onChange={(e) => setDate(e.target.value)} className="input-base" />
       </Field>
       <Field label="Phone (optional)">
         <input
@@ -319,11 +750,27 @@ function CustomerStep({
           className="input-base"
         />
       </Field>
+      <Field label="Address (optional)">
+        <input
+          value={address}
+          onChange={(e) => setAddress(e.target.value)}
+          placeholder="Village, City"
+          className="input-base"
+        />
+      </Field>
 
       <StickyCTA
         disabled={!valid}
         label="Continue"
-        onClick={() => onNext({ ...draft, customerName: name.trim(), eventDate: date, phone: phone.trim() })}
+        onClick={() =>
+          onNext({
+            ...draft,
+            customerName: name.trim(),
+            eventDate: date,
+            phone: phone.trim(),
+            address: address.trim(),
+          })
+        }
       />
     </StepShell>
   );
@@ -340,16 +787,14 @@ function ServicesStep({
   onBack: () => void;
   onNext: (d: Invoice) => void;
 }) {
+  const presets = useMemo(() => getAllPresets(), []);
   const [lines, setLines] = useState<ServiceLine[]>(draft.lines.length ? draft.lines : []);
   const [showCustom, setShowCustom] = useState(false);
 
   const total = lines.reduce((s, l) => s + l.rate * l.qty, 0);
 
-  const addPreset = (preset: (typeof DEFAULT_SERVICES)[number]) => {
-    setLines((cur) => [
-      ...cur,
-      { ...preset, id: crypto.randomUUID(), qty: 1 },
-    ]);
+  const addPreset = (preset: PresetItem) => {
+    setLines((cur) => [...cur, { ...preset, id: crypto.randomUUID(), qty: 1 }]);
   };
 
   const update = (id: string, patch: Partial<ServiceLine>) =>
@@ -357,13 +802,7 @@ function ServicesStep({
   const remove = (id: string) => setLines((cur) => cur.filter((l) => l.id !== id));
 
   return (
-    <StepShell
-      step={2}
-      total={3}
-      title="Services"
-      subtitle="Add what you'll provide for this event."
-      onBack={onBack}
-    >
+    <StepShell step={2} total={3} title="Services" subtitle="Add what you'll provide." onBack={onBack}>
       {lines.length > 0 && (
         <div className="mb-4 space-y-2">
           {lines.map((l) => (
@@ -371,7 +810,9 @@ function ServicesStep({
               <div className="flex items-center justify-between gap-3">
                 <div className="min-w-0 flex-1">
                   <div className="truncate font-semibold">{l.name}</div>
-                  <div className="text-xs text-muted-foreground">{l.unit} · Rs {l.rate}</div>
+                  <div className="text-xs text-muted-foreground">
+                    {l.unit} · Rs {l.rate}
+                  </div>
                 </div>
                 <button
                   onClick={() => remove(l.id)}
@@ -382,10 +823,7 @@ function ServicesStep({
                 </button>
               </div>
               <div className="mt-3 flex items-center gap-2">
-                <Stepper
-                  value={l.qty}
-                  onChange={(v) => update(l.id, { qty: Math.max(1, v) })}
-                />
+                <Stepper value={l.qty} onChange={(v) => update(l.id, { qty: Math.max(1, v) })} />
                 <div className="ml-auto text-right text-sm">
                   <span className="text-muted-foreground">Amount</span>{" "}
                   <span className="font-bold">Rs {l.rate * l.qty}</span>
@@ -400,14 +838,16 @@ function ServicesStep({
         Quick add
       </div>
       <div className="grid grid-cols-2 gap-2">
-        {DEFAULT_SERVICES.map((s) => (
+        {presets.map((s) => (
           <button
             key={s.name}
             onClick={() => addPreset(s)}
             className="rounded-2xl bg-secondary p-3 text-left transition hover:bg-accent hover:text-accent-foreground"
           >
             <div className="text-sm font-semibold">{s.name}</div>
-            <div className="text-xs text-muted-foreground">Rs {s.rate} · {s.unit}</div>
+            <div className="text-xs text-muted-foreground">
+              Rs {s.rate} · {s.unit}
+            </div>
           </button>
         ))}
       </div>
@@ -426,7 +866,7 @@ function ServicesStep({
             onClick={() => setShowCustom(true)}
             className="w-full rounded-2xl border-2 border-dashed border-primary/60 p-3 text-sm font-semibold text-primary transition hover:bg-primary/5"
           >
-            + Add custom service
+            + Add one-off service
           </button>
         )}
       </div>
@@ -456,7 +896,6 @@ function CustomServiceForm({
   const [rate, setRate] = useState("");
   const [unit, setUnit] = useState("fixed");
   const [qty, setQty] = useState(1);
-
   const valid = name.trim() && Number(rate) > 0;
 
   return (
@@ -496,9 +935,7 @@ function CustomServiceForm({
         </button>
         <button
           disabled={!valid}
-          onClick={() =>
-            onAdd({ name: name.trim(), rate: Number(rate), unit, qty })
-          }
+          onClick={() => onAdd({ name: name.trim(), rate: Number(rate), unit, qty })}
           className="flex-1 rounded-full bg-primary py-2.5 text-sm font-semibold text-primary-foreground disabled:opacity-40"
         >
           Add
@@ -515,14 +952,16 @@ function ReviewStep({
   onBack,
   onConfirm,
   onDiscount,
+  onTax,
 }: {
   draft: Invoice;
   onBack: () => void;
   onConfirm: () => void;
   onDiscount: (v: number) => void;
+  onTax: (v: number) => void;
 }) {
   const subtotal = draft.lines.reduce((s, l) => s + l.rate * l.qty, 0);
-  const total = subtotal - draft.discount;
+  const total = subtotal - draft.discount + (draft.tax || 0);
 
   return (
     <StepShell step={3} total={3} title="Billing" subtitle="Review and generate the invoice." onBack={onBack}>
@@ -532,6 +971,7 @@ function ReviewStep({
             <div className="text-xs uppercase tracking-wider text-muted-foreground">Bill to</div>
             <div className="mt-1 text-lg font-bold">{draft.customerName}</div>
             {draft.phone && <div className="text-xs text-muted-foreground">{draft.phone}</div>}
+            {draft.address && <div className="text-xs text-muted-foreground">{draft.address}</div>}
           </div>
           <div className="text-right">
             <div className="text-xs uppercase tracking-wider text-muted-foreground">Event</div>
@@ -542,6 +982,7 @@ function ReviewStep({
                 year: "numeric",
               })}
             </div>
+            <div className="mt-1 text-xs text-muted-foreground">{formatInvoiceNo(draft.invoiceNo)}</div>
           </div>
         </div>
 
@@ -570,6 +1011,16 @@ function ReviewStep({
             inputMode="numeric"
             value={draft.discount || ""}
             onChange={(e) => onDiscount(Number(e.target.value.replace(/[^0-9]/g, "")) || 0)}
+            placeholder="0"
+            className="w-24 rounded-lg bg-secondary px-3 py-1.5 text-right text-sm font-medium outline-none focus:ring-2 focus:ring-ring"
+          />
+        </div>
+        <div className="mt-2 flex items-center justify-between">
+          <span className="text-sm text-muted-foreground">Taxes</span>
+          <input
+            inputMode="numeric"
+            value={draft.tax || ""}
+            onChange={(e) => onTax(Number(e.target.value.replace(/[^0-9]/g, "")) || 0)}
             placeholder="0"
             className="w-24 rounded-lg bg-secondary px-3 py-1.5 text-right text-sm font-medium outline-none focus:ring-2 focus:ring-ring"
           />
@@ -604,13 +1055,8 @@ function StepShell({
 }) {
   return (
     <div>
-      <button
-        onClick={onBack}
-        className="mb-6 inline-flex items-center gap-1.5 text-sm font-medium text-muted-foreground hover:text-foreground"
-      >
-        <ChevronLeft /> Back
-      </button>
-      <div className="mb-6">
+      <BackButton onClick={onBack} />
+      <div className="mb-6 mt-4">
         <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-primary">
           Step {step} of {total}
         </div>
@@ -619,6 +1065,17 @@ function StepShell({
       </div>
       {children}
     </div>
+  );
+}
+
+function BackButton({ onClick }: { onClick: () => void }) {
+  return (
+    <button
+      onClick={onClick}
+      className="inline-flex items-center gap-1.5 text-sm font-medium text-muted-foreground hover:text-foreground"
+    >
+      <ChevronLeft /> Back
+    </button>
   );
 }
 
@@ -711,17 +1168,36 @@ function ChevronLeft() {
     </svg>
   );
 }
+function ChevronRight() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className="text-muted-foreground">
+      <path d="M9 6l6 6-6 6" />
+    </svg>
+  );
+}
+function DotsIcon() {
+  return (
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
+      <circle cx="12" cy="5" r="1.7" />
+      <circle cx="12" cy="12" r="1.7" />
+      <circle cx="12" cy="19" r="1.7" />
+    </svg>
+  );
+}
 
 /* ---------- helpers ---------- */
 
 function emptyInvoice(): Invoice {
   return {
     id: typeof crypto !== "undefined" ? crypto.randomUUID() : String(Date.now()),
+    invoiceNo: typeof window !== "undefined" ? nextInvoiceNo() : BUSINESS.invoiceStart,
     customerName: "",
     eventDate: new Date().toISOString().slice(0, 10),
     phone: "",
+    address: "",
     lines: [],
     discount: 0,
+    tax: 0,
     total: 0,
     createdAt: new Date().toISOString(),
   };

@@ -4,10 +4,6 @@ import { formatInvoiceNo } from "./invoice-storage";
 import { BUSINESS } from "./business";
 
 function buildInvoiceDoc(inv: Invoice) {
-  return _build(inv);
-}
-
-export function generateInvoicePDF(inv: Invoice) {
   const doc = new jsPDF({ unit: "pt", format: "a4" });
   const W = doc.internal.pageSize.getWidth();
   const H = doc.internal.pageSize.getHeight();

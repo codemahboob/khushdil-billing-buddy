@@ -612,12 +612,21 @@ function DetailScreen({
 
       {!isDeleted && !editing && (
         <div className="mt-6 space-y-3">
-          <button
-            onClick={() => generateInvoicePDF(inv)}
-            className="w-full rounded-full bg-primary py-3.5 text-base font-semibold text-primary-foreground shadow-pop"
-          >
-            Download PDF
-          </button>
+          <div className="flex gap-2">
+            <button
+              onClick={() => generateInvoicePDF(inv)}
+              className="flex-1 rounded-full bg-primary py-3.5 text-base font-semibold text-primary-foreground shadow-pop"
+            >
+              Download PDF
+            </button>
+            <button
+              onClick={() => void shareInvoicePDF(inv)}
+              className="rounded-full border border-border bg-card px-5 py-3.5 text-base font-semibold text-foreground"
+              aria-label="Share invoice"
+            >
+              Share
+            </button>
+          </div>
 
           <div className="rounded-2xl border border-destructive/20 bg-destructive/5 p-4">
             <div className="mb-2 text-sm font-semibold text-destructive">Danger zone</div>

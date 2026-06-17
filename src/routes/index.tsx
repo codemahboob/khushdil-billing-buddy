@@ -383,6 +383,19 @@ function DetailScreen({
 }) {
   const [confirmStep, setConfirmStep] = useState(0);
   const [confirmText, setConfirmText] = useState("");
+  const [editing, setEditing] = useState(false);
+  const [draftLines, setDraftLines] = useState<ServiceLine[]>(inv?.lines ?? []);
+  const [draftDiscount, setDraftDiscount] = useState(inv?.discount ?? 0);
+  const [draftTax, setDraftTax] = useState(inv?.tax ?? 0);
+  const [showCustom, setShowCustom] = useState(false);
+  const presets = useMemo(() => getAllPresets(), []);
+
+  useEffect(() => {
+    setDraftLines(inv?.lines ?? []);
+    setDraftDiscount(inv?.discount ?? 0);
+    setDraftTax(inv?.tax ?? 0);
+    setEditing(false);
+  }, [inv?.id]);
 
   if (!inv) {
     return (
@@ -393,19 +406,45 @@ function DetailScreen({
     );
   }
 
-  const subtotal = inv.lines.reduce((s, l) => s + l.rate * l.qty, 0);
   const isDeleted = !!inv.deletedAt;
 
+  const liveLines = editing ? draftLines : inv.lines;
+  const liveDiscount = editing ? draftDiscount : inv.discount;
+  const liveTax = editing ? draftTax : inv.tax;
+  const subtotal = liveLines.reduce((s, l) => s + l.rate * l.qty, 0);
+  const total = subtotal - liveDiscount + (liveTax || 0);
+
+  const updateLine = (id: string, patch: Partial<ServiceLine>) =>
+    setDraftLines((cur) => cur.map((l) => (l.id === id ? { ...l, ...patch } : l)));
+  const removeLine = (id: string) =>
+    setDraftLines((cur) => cur.filter((l) => l.id !== id));
+  const addPreset = (p: PresetItem) =>
+    setDraftLines((cur) => [...cur, { ...p, id: crypto.randomUUID(), qty: 1 }]);
+
+  const saveEdits = () => {
+    const newTotal = draftLines.reduce((s, l) => s + l.rate * l.qty, 0) - draftDiscount + (draftTax || 0);
+    saveInvoice({
+      ...inv,
+      lines: draftLines,
+      discount: draftDiscount,
+      tax: draftTax,
+      total: newTotal,
+    });
+    setEditing(false);
+    onChanged();
+  };
+
+  const cancelEdits = () => {
+    setDraftLines(inv.lines);
+    setDraftDiscount(inv.discount);
+    setDraftTax(inv.tax);
+    setEditing(false);
+    setShowCustom(false);
+  };
+
   const tryDelete = () => {
-    if (confirmStep === 0) {
-      setConfirmStep(1);
-      return;
-    }
-    if (confirmStep === 1) {
-      setConfirmStep(2);
-      return;
-    }
-    // Step 2: require typing DELETE
+    if (confirmStep === 0) return setConfirmStep(1);
+    if (confirmStep === 1) return setConfirmStep(2);
     if (confirmText.trim().toUpperCase() !== "DELETE") return;
     softDeleteInvoice(inv.id);
     onChanged();
@@ -415,28 +454,38 @@ function DetailScreen({
     <div>
       <BackButton onClick={onBack} />
 
-      <div className="mt-4 mb-6">
-        <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-primary">
-          {formatInvoiceNo(inv.invoiceNo)}
-        </p>
-        <h2 className="mt-1 text-3xl font-bold tracking-tight">{inv.customerName}</h2>
-        <p className="mt-1 text-sm text-muted-foreground">
-          Event ·{" "}
-          {new Date(inv.eventDate).toLocaleDateString(undefined, {
-            day: "numeric",
-            month: "long",
-            year: "numeric",
-          })}
-        </p>
-        {inv.phone && <p className="text-xs text-muted-foreground">Phone: {inv.phone}</p>}
-        {inv.address && <p className="text-xs text-muted-foreground">{inv.address}</p>}
+      <div className="mt-4 mb-6 flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-primary">
+            {formatInvoiceNo(inv.invoiceNo)}
+          </p>
+          <h2 className="mt-1 text-3xl font-bold tracking-tight truncate">{inv.customerName}</h2>
+          <p className="mt-1 text-sm text-muted-foreground">
+            Event ·{" "}
+            {new Date(inv.eventDate).toLocaleDateString(undefined, {
+              day: "numeric",
+              month: "long",
+              year: "numeric",
+            })}
+          </p>
+          {inv.phone && <p className="text-xs text-muted-foreground">Phone: {inv.phone}</p>}
+          {inv.address && <p className="text-xs text-muted-foreground">{inv.address}</p>}
+        </div>
+        {!isDeleted && !editing && (
+          <button
+            onClick={() => setEditing(true)}
+            className="shrink-0 rounded-full bg-secondary px-4 py-2 text-xs font-semibold text-secondary-foreground hover:bg-accent"
+          >
+            Edit
+          </button>
+        )}
       </div>
 
       <div className="mb-3 text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
         Items
       </div>
       <div className="space-y-2">
-        {inv.lines.map((l) => (
+        {liveLines.map((l) => (
           <div key={l.id} className="rounded-2xl bg-card p-4 shadow-soft">
             <div className="flex items-baseline justify-between gap-3">
               <div className="min-w-0">
@@ -447,21 +496,121 @@ function DetailScreen({
               </div>
               <div className="font-bold">Rs {l.qty * l.rate}</div>
             </div>
+            {editing && (
+              <div className="mt-3 flex items-center gap-2">
+                <Stepper value={l.qty} onChange={(v) => updateLine(l.id, { qty: Math.max(1, v) })} />
+                <button
+                  onClick={() => removeLine(l.id)}
+                  className="ml-auto text-muted-foreground hover:text-destructive"
+                  aria-label="Remove"
+                >
+                  <TrashIcon />
+                </button>
+              </div>
+            )}
           </div>
         ))}
+        {liveLines.length === 0 && (
+          <EmptyHint text="No items yet. Add some below." />
+        )}
       </div>
+
+      {editing && (
+        <div className="mt-6">
+          <div className="mb-3 text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
+            Add more items
+          </div>
+          <div className="grid grid-cols-2 gap-2">
+            {presets.map((s) => (
+              <button
+                key={s.name}
+                onClick={() => addPreset(s)}
+                className="rounded-2xl bg-secondary p-3 text-left transition hover:bg-accent hover:text-accent-foreground"
+              >
+                <div className="text-sm font-semibold">{s.name}</div>
+                <div className="text-xs text-muted-foreground">
+                  Rs {s.rate} · {s.unit}
+                </div>
+              </button>
+            ))}
+          </div>
+          <div className="mt-3">
+            {showCustom ? (
+              <CustomServiceForm
+                onAdd={(svc) => {
+                  setDraftLines((c) => [...c, { ...svc, id: crypto.randomUUID() }]);
+                  setShowCustom(false);
+                }}
+                onCancel={() => setShowCustom(false)}
+              />
+            ) : (
+              <button
+                onClick={() => setShowCustom(true)}
+                className="w-full rounded-2xl border-2 border-dashed border-primary/60 p-3 text-sm font-semibold text-primary transition hover:bg-primary/5"
+              >
+                + Add one-off service
+              </button>
+            )}
+          </div>
+        </div>
+      )}
 
       <div className="mt-6 rounded-2xl bg-card p-5 shadow-soft">
         <Row label="Subtotal" value={`Rs ${subtotal}`} />
-        {inv.discount > 0 && <Row label="Discount" value={`- Rs ${inv.discount}`} />}
-        {inv.tax > 0 && <Row label="Taxes" value={`Rs ${inv.tax}`} />}
+        {editing ? (
+          <>
+            <div className="mt-2 flex items-center justify-between">
+              <span className="text-sm text-muted-foreground">Discount</span>
+              <input
+                inputMode="numeric"
+                value={draftDiscount || ""}
+                onChange={(e) => setDraftDiscount(Number(e.target.value.replace(/[^0-9]/g, "")) || 0)}
+                placeholder="0"
+                className="w-24 rounded-lg bg-secondary px-3 py-1.5 text-right text-sm font-medium outline-none focus:ring-2 focus:ring-ring"
+              />
+            </div>
+            <div className="mt-2 flex items-center justify-between">
+              <span className="text-sm text-muted-foreground">Taxes</span>
+              <input
+                inputMode="numeric"
+                value={draftTax || ""}
+                onChange={(e) => setDraftTax(Number(e.target.value.replace(/[^0-9]/g, "")) || 0)}
+                placeholder="0"
+                className="w-24 rounded-lg bg-secondary px-3 py-1.5 text-right text-sm font-medium outline-none focus:ring-2 focus:ring-ring"
+              />
+            </div>
+          </>
+        ) : (
+          <>
+            {liveDiscount > 0 && <Row label="Discount" value={`- Rs ${liveDiscount}`} />}
+            {liveTax > 0 && <Row label="Taxes" value={`Rs ${liveTax}`} />}
+          </>
+        )}
         <div className="mt-3 flex items-baseline justify-between border-t border-border pt-3">
           <span className="text-sm font-semibold">Total</span>
-          <span className="text-2xl font-extrabold">Rs {inv.total}</span>
+          <span className="text-2xl font-extrabold">Rs {total}</span>
         </div>
       </div>
 
-      {!isDeleted && (
+      {!isDeleted && editing && (
+        <div className="mt-6 flex gap-2">
+          <button
+            onClick={cancelEdits}
+            className="flex-1 rounded-full bg-secondary py-3 text-sm font-semibold text-secondary-foreground"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={saveEdits}
+            disabled={draftLines.length === 0}
+            className="flex-1 rounded-full bg-primary py-3 text-sm font-semibold text-primary-foreground disabled:opacity-40"
+          >
+            Save changes
+          </button>
+        </div>
+      )}
+
+      {!isDeleted && !editing && (
         <div className="mt-6 space-y-3">
           <button
             onClick={() => generateInvoicePDF(inv)}

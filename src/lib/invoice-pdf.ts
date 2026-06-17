@@ -1,114 +1,195 @@
 import jsPDF from "jspdf";
 import type { Invoice } from "./invoice-storage";
+import { formatInvoiceNo } from "./invoice-storage";
+import { BUSINESS } from "./business";
 
 export function generateInvoicePDF(inv: Invoice) {
   const doc = new jsPDF({ unit: "pt", format: "a4" });
   const W = doc.internal.pageSize.getWidth();
-  let y = 56;
+  const H = doc.internal.pageSize.getHeight();
+  const L = 56;
+  const R = W - 56;
 
-  // Header
+  const issued = new Date(inv.createdAt).toLocaleDateString("en-GB", {
+    day: "numeric",
+    month: "long",
+    year: "numeric",
+  });
+
+  // ---- Top-left meta
   doc.setFont("helvetica", "bold");
-  doc.setFontSize(20);
-  doc.text("Khushdil Tent & DJ", 48, y);
+  doc.setFontSize(10);
+  doc.setTextColor(20);
+  doc.text(issued, L, 90);
+
+  doc.text("Invoice No", L + 140, 90);
+  doc.text(formatInvoiceNo(inv.invoiceNo).replace("#", ""), L + 140, 104);
+
+  // ---- Big display brand (right)
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(46);
+  doc.setTextColor(15);
+  const brandWords = BUSINESS.name.split(" & ");
+  // Render line-broken display name on the right
+  const lines = ["Khushdil", "Tent & DJ"];
+  let by = 96;
+  lines.forEach((ln) => {
+    doc.text(ln, R, by, { align: "right" });
+    by += 44;
+  });
   doc.setFont("helvetica", "normal");
   doc.setFontSize(10);
-  doc.setTextColor(120);
-  doc.text("Event Services • Invoice", 48, y + 16);
+  doc.setTextColor(80);
+  doc.text(`Proprietor — ${BUSINESS.proprietor}`, R, by - 6, { align: "right" });
+  void brandWords;
 
-  doc.setTextColor(30);
-  doc.setFont("helvetica", "bold");
-  doc.setFontSize(11);
-  doc.text(`Invoice #${inv.id.slice(0, 8).toUpperCase()}`, W - 48, y, { align: "right" });
+  // ---- Invoice To block
+  let y = 230;
   doc.setFont("helvetica", "normal");
-  doc.setTextColor(120);
-  doc.text(new Date(inv.createdAt).toLocaleDateString(), W - 48, y + 16, { align: "right" });
+  doc.setFontSize(10);
+  doc.setTextColor(80);
+  doc.text("Invoice to :", R, y, { align: "right" });
 
-  y += 50;
-  doc.setDrawColor(220);
-  doc.line(48, y, W - 48, y);
-
-  // Bill to
-  y += 28;
-  doc.setTextColor(120);
-  doc.setFontSize(9);
-  doc.text("BILL TO", 48, y);
-  doc.text("EVENT DATE", W / 2, y);
-  doc.setTextColor(20);
   doc.setFont("helvetica", "bold");
   doc.setFontSize(13);
-  doc.text(inv.customerName || "Customer", 48, y + 18);
-  doc.text(new Date(inv.eventDate).toLocaleDateString(undefined, { weekday: "short", day: "numeric", month: "long", year: "numeric" }), W / 2, y + 18);
-  if (inv.phone) {
-    doc.setFont("helvetica", "normal");
-    doc.setFontSize(10);
-    doc.setTextColor(120);
-    doc.text(inv.phone, 48, y + 34);
-  }
+  doc.setTextColor(15);
+  doc.text((inv.customerName || "Customer").toUpperCase(), R, y + 20, { align: "right" });
 
-  // Table header
-  y += 64;
-  doc.setFillColor(245, 247, 245);
-  doc.rect(48, y - 14, W - 96, 24, "F");
+  doc.setFont("helvetica", "normal");
+  doc.setFontSize(10);
+  doc.setTextColor(60);
+  if (inv.address) {
+    doc.text(inv.address, R, y + 36, { align: "right" });
+  }
+  if (inv.phone) {
+    doc.text(`Phone: ${inv.phone}`, R, y + (inv.address ? 50 : 36), { align: "right" });
+  }
   doc.setTextColor(80);
+  doc.text(
+    `Event: ${new Date(inv.eventDate).toLocaleDateString("en-GB", { day: "numeric", month: "long", year: "numeric" })}`,
+    R,
+    y + (inv.address ? 64 : 50),
+    { align: "right" },
+  );
+
+  // ---- Items table
+  y = 340;
+  doc.setDrawColor(40);
+  doc.setLineWidth(0.8);
+  doc.line(L, y, R, y);
+
   doc.setFont("helvetica", "bold");
   doc.setFontSize(9);
-  doc.text("SERVICE", 60, y);
-  doc.text("QTY", W - 240, y, { align: "right" });
-  doc.text("RATE", W - 160, y, { align: "right" });
-  doc.text("AMOUNT", W - 60, y, { align: "right" });
-
-  y += 18;
-  doc.setFont("helvetica", "normal");
-  doc.setFontSize(11);
   doc.setTextColor(20);
+  const colQty = L + 250;
+  const colPrice = L + 340;
+  const colSub = R;
+  doc.text("ITEM DESCRIPTION", L, y - 8);
+  doc.text("QTY", colQty, y - 8);
+  doc.text("PRICE", colPrice, y - 8);
+  doc.text("SUB TOTAL", colSub, y - 8, { align: "right" });
+
+  y += 24;
+  doc.setFont("helvetica", "normal");
+  doc.setFontSize(10);
 
   inv.lines.forEach((l) => {
     const amount = l.rate * l.qty;
-    doc.text(l.name, 60, y);
-    doc.setTextColor(120);
-    doc.setFontSize(9);
-    doc.text(l.unit, 60, y + 12);
-    doc.setTextColor(20);
+    doc.setFont("helvetica", "bold");
+    doc.setTextColor(15);
     doc.setFontSize(11);
-    doc.text(String(l.qty), W - 240, y, { align: "right" });
-    doc.text(`Rs ${l.rate}`, W - 160, y, { align: "right" });
-    doc.text(`Rs ${amount}`, W - 60, y, { align: "right" });
-    y += 28;
-    doc.setDrawColor(235);
-    doc.line(48, y - 8, W - 48, y - 8);
+    doc.text(l.name, L, y);
+
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(9);
+    doc.setTextColor(110);
+    const desc = l.description || l.unit;
+    const wrapped = doc.splitTextToSize(desc, 200);
+    doc.text(wrapped, L, y + 12);
+
+    doc.setTextColor(30);
+    doc.setFontSize(10);
+    doc.text(String(l.qty), colQty, y);
+    doc.text(`Rs ${l.rate}`, colPrice, y);
+    doc.text(`Rs ${amount}`, colSub, y, { align: "right" });
+
+    const rowH = 18 + wrapped.length * 11;
+    y += rowH + 8;
+    doc.setDrawColor(225);
+    doc.setLineWidth(0.5);
+    doc.line(L, y - 6, R, y - 6);
   });
 
-  // Totals
+  // Bottom border of table
+  y += 4;
+  doc.setDrawColor(40);
+  doc.setLineWidth(0.8);
+  doc.line(L, y, R, y);
+
+  // ---- Totals + terms
+  y += 30;
   const subtotal = inv.lines.reduce((s, l) => s + l.rate * l.qty, 0);
-  y += 16;
-  doc.setTextColor(120);
-  doc.setFontSize(10);
-  doc.text("Subtotal", W - 160, y, { align: "right" });
-  doc.setTextColor(20);
-  doc.text(`Rs ${subtotal}`, W - 60, y, { align: "right" });
+  const totalsX = colPrice;
 
-  if (inv.discount > 0) {
-    y += 18;
-    doc.setTextColor(120);
-    doc.text("Discount", W - 160, y, { align: "right" });
-    doc.setTextColor(20);
-    doc.text(`- Rs ${inv.discount}`, W - 60, y, { align: "right" });
-  }
-
-  y += 24;
-  doc.setDrawColor(20);
-  doc.line(W - 240, y - 12, W - 48, y - 12);
+  // Terms (left)
   doc.setFont("helvetica", "bold");
-  doc.setFontSize(13);
-  doc.text("TOTAL", W - 160, y, { align: "right" });
-  doc.text(`Rs ${inv.total}`, W - 60, y, { align: "right" });
-
-  // Footer
+  doc.setFontSize(10);
+  doc.setTextColor(15);
+  doc.text("Term and Conditions :", L, y);
   doc.setFont("helvetica", "normal");
   doc.setFontSize(9);
-  doc.setTextColor(140);
-  doc.text("Thank you for choosing Khushdil Tent & DJ.", 48, 800);
+  doc.setTextColor(90);
+  doc.text(doc.splitTextToSize(BUSINESS.terms, 220), L, y + 14);
 
-  const safeName = inv.customerName.replace(/[^a-z0-9]/gi, "_") || "invoice";
-  doc.save(`Khushdil_${safeName}_${inv.id.slice(0, 6)}.pdf`);
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(10);
+  doc.setTextColor(15);
+  doc.text("Contact :", L, y + 60);
+  doc.setFont("helvetica", "normal");
+  doc.setFontSize(9);
+  doc.setTextColor(90);
+  doc.text(BUSINESS.phones.join(" / "), L, y + 74);
+
+  // Totals (right)
+  doc.setFont("helvetica", "normal");
+  doc.setFontSize(10);
+  doc.setTextColor(80);
+  doc.text("SUB TOTAL", totalsX, y);
+  doc.setTextColor(15);
+  doc.text(`Rs ${subtotal}`, colSub, y, { align: "right" });
+
+  doc.setTextColor(80);
+  doc.text(inv.discount > 0 ? "DISCOUNT" : "TAXES", totalsX, y + 22);
+  doc.setTextColor(15);
+  doc.text(
+    inv.discount > 0 ? `- Rs ${inv.discount}` : `Rs ${inv.tax || 0}`,
+    colSub,
+    y + 22,
+    { align: "right" },
+  );
+
+  y += 50;
+  doc.setDrawColor(220);
+  doc.line(totalsX - 10, y - 8, R, y - 8);
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(12);
+  doc.setTextColor(15);
+  doc.text("TOTAL", totalsX, y);
+  doc.text(`Rs ${inv.total}`, colSub, y, { align: "right" });
+
+  // ---- Footer
+  const fy = H - 90;
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(10);
+  doc.setTextColor(15);
+  doc.text(`${BUSINESS.name}`, L, fy);
+  doc.setFont("helvetica", "normal");
+  doc.setFontSize(9);
+  doc.setTextColor(90);
+  doc.text(`P. ${BUSINESS.phones.join(", ")}`, L, fy + 16);
+  doc.text(`A. ${BUSINESS.address}`, L, fy + 30);
+  doc.text(`Proprietor: ${BUSINESS.proprietor}`, L, fy + 44);
+
+  const safeName = (inv.customerName || "invoice").replace(/[^a-z0-9]/gi, "_");
+  doc.save(`KTD${inv.invoiceNo}_${safeName}.pdf`);
 }

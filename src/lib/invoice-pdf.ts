@@ -3,7 +3,7 @@ import type { Invoice } from "./invoice-storage";
 import { formatInvoiceNo } from "./invoice-storage";
 import { BUSINESS } from "./business";
 
-export function generateInvoicePDF(inv: Invoice) {
+function buildInvoiceDoc(inv: Invoice) {
   const doc = new jsPDF({ unit: "pt", format: "a4" });
   const W = doc.internal.pageSize.getWidth();
   const H = doc.internal.pageSize.getHeight();
@@ -190,10 +190,17 @@ export function generateInvoicePDF(inv: Invoice) {
   doc.text(`A. ${BUSINESS.address}`, L, fy + 30);
   doc.text(`Proprietor: ${BUSINESS.proprietor}`, L, fy + 44);
 
-  const safeName = (inv.customerName || "invoice").replace(/[^a-z0-9]/gi, "_");
-  const filename = `KTD${inv.invoiceNo}_${safeName}.pdf`;
+  return doc;
+}
 
-  // Use blob + anchor so it works on mobile browsers (where doc.save can fail silently)
+function invoiceFilename(inv: Invoice) {
+  const safeName = (inv.customerName || "invoice").replace(/[^a-z0-9]/gi, "_");
+  return `KTD${inv.invoiceNo}_${safeName}.pdf`;
+}
+
+export function generateInvoicePDF(inv: Invoice) {
+  const doc = buildInvoiceDoc(inv);
+  const filename = invoiceFilename(inv);
   try {
     const blob = doc.output("blob");
     const url = URL.createObjectURL(blob);
@@ -201,20 +208,38 @@ export function generateInvoicePDF(inv: Invoice) {
     a.href = url;
     a.download = filename;
     a.rel = "noopener";
-    a.target = "_blank";
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
-    // Fallback for iOS Safari: open in a new tab so the user can save/share
-    setTimeout(() => {
-      try {
-        window.open(url, "_blank");
-      } catch {
-        /* noop */
-      }
-      setTimeout(() => URL.revokeObjectURL(url), 30_000);
-    }, 250);
+    setTimeout(() => URL.revokeObjectURL(url), 30_000);
   } catch {
     doc.save(filename);
   }
+}
+
+export async function shareInvoicePDF(inv: Invoice): Promise<"shared" | "downloaded" | "unsupported"> {
+  const doc = buildInvoiceDoc(inv);
+  const safeName = (inv.customerName || "invoice").replace(/[^a-z0-9]/gi, "_");
+  const filename = `KTD${inv.invoiceNo}_${safeName}.pdf`;
+  const blob = doc.output("blob");
+  const file = new File([blob], filename, { type: "application/pdf" });
+  const nav = navigator as Navigator & { canShare?: (d: { files: File[] }) => boolean; share?: (d: ShareData & { files?: File[] }) => Promise<void> };
+  if (nav.canShare && nav.canShare({ files: [file] }) && nav.share) {
+    try {
+      await nav.share({ files: [file], title: filename, text: `Invoice ${formatInvoiceNo(inv.invoiceNo)}` });
+      return "shared";
+    } catch {
+      return "unsupported";
+    }
+  }
+  // Fallback: download
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 30_000);
+  return "downloaded";
 }

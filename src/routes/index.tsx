@@ -19,7 +19,7 @@ import {
   saveInvoice,
   softDeleteInvoice,
 } from "@/lib/invoice-storage";
-import { generateInvoicePDF } from "@/lib/invoice-pdf";
+import { generateInvoicePDF, shareInvoicePDF } from "@/lib/invoice-pdf";
 import { BUSINESS } from "@/lib/business";
 
 export const Route = createFileRoute("/")({

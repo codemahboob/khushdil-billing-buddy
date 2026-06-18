@@ -1,32 +1,34 @@
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import {
   BUILTIN_SERVICES,
+  formatInvoiceNo,
   type Invoice,
   type PresetItem,
   type ServiceLine,
+} from "@/lib/invoice-storage";
+import {
+  addCustomService,
   emptyBin,
-  formatInvoiceNo,
-  getAllPresets,
-  loadCustomItems,
-  loadDeleted,
-  loadInvoices,
-  nextInvoiceNo,
-  permanentlyDelete,
+  permanentlyDeleteInvoice,
+  removeCustomService,
   restoreInvoice,
-  saveCustomItems,
   saveInvoice,
   softDeleteInvoice,
-} from "@/lib/invoice-storage";
+} from "@/lib/cloud-storage";
 import { generateInvoicePDF, shareInvoicePDF } from "@/lib/invoice-pdf";
 import { BUSINESS } from "@/lib/business";
+import { useCloudData } from "@/hooks/use-cloud-data";
 
-export const Route = createFileRoute("/")({
+export const Route = createFileRoute("/_authenticated/")({
   head: () => ({
     meta: [
       { title: "Khushdil Tent & DJ — Invoice" },
-      { name: "description", content: "Create invoices and track events for Khushdil Tent & DJ." },
+      {
+        name: "description",
+        content: "Create invoices and track events for Khushdil Tent & DJ.",
+      },
     ],
   }),
   component: App,
@@ -42,35 +44,31 @@ type View =
   | { name: "manage" };
 
 function App() {
+  const navigate = useNavigate();
+  const { loading, profile, invoices, deleted, presets, refresh } = useCloudData();
   const [view, setView] = useState<View>({ name: "home" });
   const [draft, setDraft] = useState<Invoice>(() => emptyInvoice());
-  const [invoices, setInvoices] = useState<Invoice[]>([]);
-  const [deleted, setDeleted] = useState<Invoice[]>([]);
-  const [mounted, setMounted] = useState(false);
-
-  const refresh = () => {
-    setInvoices(loadInvoices());
-    setDeleted(loadDeleted());
-  };
-
-  useEffect(() => {
-    refresh();
-    setMounted(true);
-  }, []);
+  const [saving, setSaving] = useState(false);
 
   const reset = () => {
     setDraft(emptyInvoice());
     setView({ name: "home" });
   };
 
-  const finalize = () => {
-    const subtotal = draft.lines.reduce((s, l) => s + l.rate * l.qty, 0);
-    const total = subtotal - draft.discount + (draft.tax || 0);
-    const final: Invoice = { ...draft, total };
-    saveInvoice(final);
-    generateInvoicePDF(final);
-    refresh();
-    reset();
+  const finalize = async () => {
+    setSaving(true);
+    try {
+      const subtotal = draft.lines.reduce((s, l) => s + l.rate * l.qty, 0);
+      const total = subtotal - draft.discount + (draft.tax || 0);
+      const saved = await saveInvoice({ ...draft, total });
+      generateInvoicePDF(saved, profile);
+      await refresh();
+      reset();
+    } catch (e) {
+      alert("Could not save invoice: " + (e instanceof Error ? e.message : String(e)));
+    } finally {
+      setSaving(false);
+    }
   };
 
   const startNew = () => {
@@ -85,7 +83,9 @@ function App() {
           onMenu={(action) => {
             if (action === "manage") setView({ name: "manage" });
             if (action === "bin") setView({ name: "bin" });
+            if (action === "settings") navigate({ to: "/settings" });
           }}
+          businessName={profile?.business_name || BUSINESS.name}
         />
 
         <AnimatePresence mode="wait">
@@ -94,7 +94,8 @@ function App() {
               <HomeScreen
                 onAdd={startNew}
                 onOpen={(inv) => setView({ name: "detail", id: inv.id })}
-                invoices={mounted ? invoices : []}
+                invoices={invoices}
+                loading={loading}
               />
             </Pane>
           )}
@@ -114,6 +115,7 @@ function App() {
             <Pane key="services">
               <ServicesStep
                 draft={draft}
+                presets={presets}
                 onBack={() => setView({ name: "customer" })}
                 onNext={(d) => {
                   setDraft(d);
@@ -126,10 +128,13 @@ function App() {
             <Pane key="review">
               <ReviewStep
                 draft={draft}
+                profile={profile}
+                saving={saving}
                 onBack={() => setView({ name: "services" })}
                 onConfirm={finalize}
                 onDiscount={(v) => setDraft({ ...draft, discount: v })}
                 onTax={(v) => setDraft({ ...draft, tax: v })}
+                onAdvance={(v) => setDraft({ ...draft, advancePaid: v })}
               />
             </Pane>
           )}
@@ -140,9 +145,11 @@ function App() {
                   invoices.find((i) => i.id === view.id) ||
                   deleted.find((i) => i.id === view.id)
                 }
+                profile={profile}
+                presets={presets}
                 onBack={() => setView({ name: "home" })}
-                onChanged={() => {
-                  refresh();
+                onChanged={async () => {
+                  await refresh();
                   setView({ name: "home" });
                 }}
               />
@@ -159,7 +166,11 @@ function App() {
           )}
           {view.name === "manage" && (
             <Pane key="manage">
-              <ManageItemsScreen onBack={() => setView({ name: "home" })} />
+              <ManageItemsScreen
+                presets={presets}
+                onBack={() => setView({ name: "home" })}
+                onChange={refresh}
+              />
             </Pane>
           )}
         </AnimatePresence>
@@ -170,7 +181,13 @@ function App() {
 
 /* ---------- Header with kebab menu ---------- */
 
-function Header({ onMenu }: { onMenu: (a: "manage" | "bin") => void }) {
+function Header({
+  onMenu,
+  businessName,
+}: {
+  onMenu: (a: "manage" | "bin" | "settings") => void;
+  businessName: string;
+}) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -185,13 +202,13 @@ function Header({ onMenu }: { onMenu: (a: "manage" | "bin") => void }) {
     <div className="mb-8 flex items-center justify-between">
       <div>
         <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
-          {BUSINESS.name}
+          {businessName}
         </p>
         <h1 className="mt-1 text-2xl font-bold text-foreground">Invoices</h1>
       </div>
       <div className="relative flex items-center gap-2" ref={ref}>
         <div className="flex h-10 w-10 items-center justify-center rounded-full bg-accent text-accent-foreground font-bold">
-          K
+          {(businessName[0] || "K").toUpperCase()}
         </div>
         <button
           onClick={() => setOpen((v) => !v)}
@@ -224,6 +241,14 @@ function Header({ onMenu }: { onMenu: (a: "manage" | "bin") => void }) {
                 }}
               >
                 Recycle bin
+              </MenuItem>
+              <MenuItem
+                onClick={() => {
+                  setOpen(false);
+                  onMenu("settings");
+                }}
+              >
+                Business settings
               </MenuItem>
             </motion.div>
           )}
@@ -263,10 +288,12 @@ function HomeScreen({
   onAdd,
   invoices,
   onOpen,
+  loading,
 }: {
   onAdd: () => void;
   invoices: Invoice[];
   onOpen: (i: Invoice) => void;
+  loading: boolean;
 }) {
   const upcoming = useMemo(
     () =>
@@ -298,20 +325,28 @@ function HomeScreen({
         </button>
       </div>
 
-      <Section title="Upcoming Events" count={upcoming.length}>
-        {upcoming.length === 0 ? (
-          <EmptyHint text="Tap Add Name to create your first invoice." />
-        ) : (
-          upcoming.map((i) => <InvoiceCard key={i.id} inv={i} onOpen={onOpen} upcoming />)
-        )}
-      </Section>
+      {loading && invoices.length === 0 ? (
+        <div className="rounded-2xl border border-dashed border-border bg-card/50 p-6 text-center text-sm text-muted-foreground">
+          Syncing your events…
+        </div>
+      ) : (
+        <>
+          <Section title="Upcoming Events" count={upcoming.length}>
+            {upcoming.length === 0 ? (
+              <EmptyHint text="Tap Add Name to create your first invoice." />
+            ) : (
+              upcoming.map((i) => <InvoiceCard key={i.id} inv={i} onOpen={onOpen} upcoming />)
+            )}
+          </Section>
 
-      {past.length > 0 && (
-        <Section title="Past" count={past.length}>
-          {past.map((i) => (
-            <InvoiceCard key={i.id} inv={i} onOpen={onOpen} />
-          ))}
-        </Section>
+          {past.length > 0 && (
+            <Section title="Past" count={past.length}>
+              {past.map((i) => (
+                <InvoiceCard key={i.id} inv={i} onOpen={onOpen} />
+              ))}
+            </Section>
+          )}
+        </>
       )}
     </div>
   );
@@ -374,12 +409,16 @@ function InvoiceCard({
 
 function DetailScreen({
   inv,
+  profile,
+  presets,
   onBack,
   onChanged,
 }: {
   inv?: Invoice;
+  profile: import("@/lib/cloud-storage").BusinessProfile | null;
+  presets: PresetItem[];
   onBack: () => void;
-  onChanged: () => void;
+  onChanged: () => void | Promise<void>;
 }) {
   const [confirmStep, setConfirmStep] = useState(0);
   const [confirmText, setConfirmText] = useState("");
@@ -387,13 +426,15 @@ function DetailScreen({
   const [draftLines, setDraftLines] = useState<ServiceLine[]>(inv?.lines ?? []);
   const [draftDiscount, setDraftDiscount] = useState(inv?.discount ?? 0);
   const [draftTax, setDraftTax] = useState(inv?.tax ?? 0);
+  const [draftAdvance, setDraftAdvance] = useState(inv?.advancePaid ?? 0);
   const [showCustom, setShowCustom] = useState(false);
-  const presets = useMemo(() => getAllPresets(), []);
+  const [busy, setBusy] = useState(false);
 
   useEffect(() => {
     setDraftLines(inv?.lines ?? []);
     setDraftDiscount(inv?.discount ?? 0);
     setDraftTax(inv?.tax ?? 0);
+    setDraftAdvance(inv?.advancePaid ?? 0);
     setEditing(false);
   }, [inv?.id]);
 
@@ -411,43 +452,59 @@ function DetailScreen({
   const liveLines = editing ? draftLines : inv.lines;
   const liveDiscount = editing ? draftDiscount : inv.discount;
   const liveTax = editing ? draftTax : inv.tax;
+  const liveAdvance = editing ? draftAdvance : (inv.advancePaid ?? 0);
   const subtotal = liveLines.reduce((s, l) => s + l.rate * l.qty, 0);
   const total = subtotal - liveDiscount + (liveTax || 0);
+  const due = Math.max(0, total - liveAdvance);
 
   const updateLine = (id: string, patch: Partial<ServiceLine>) =>
     setDraftLines((cur) => cur.map((l) => (l.id === id ? { ...l, ...patch } : l)));
-  const removeLine = (id: string) =>
-    setDraftLines((cur) => cur.filter((l) => l.id !== id));
+  const removeLine = (id: string) => setDraftLines((cur) => cur.filter((l) => l.id !== id));
   const addPreset = (p: PresetItem) =>
     setDraftLines((cur) => [...cur, { ...p, id: crypto.randomUUID(), qty: 1 }]);
 
-  const saveEdits = () => {
-    const newTotal = draftLines.reduce((s, l) => s + l.rate * l.qty, 0) - draftDiscount + (draftTax || 0);
-    saveInvoice({
-      ...inv,
-      lines: draftLines,
-      discount: draftDiscount,
-      tax: draftTax,
-      total: newTotal,
-    });
-    setEditing(false);
-    onChanged();
+  const saveEdits = async () => {
+    setBusy(true);
+    try {
+      const newTotal =
+        draftLines.reduce((s, l) => s + l.rate * l.qty, 0) - draftDiscount + (draftTax || 0);
+      await saveInvoice({
+        ...inv,
+        lines: draftLines,
+        discount: draftDiscount,
+        tax: draftTax,
+        advancePaid: draftAdvance,
+        total: newTotal,
+      });
+      setEditing(false);
+      await onChanged();
+    } catch (e) {
+      alert("Save failed: " + (e instanceof Error ? e.message : String(e)));
+    } finally {
+      setBusy(false);
+    }
   };
 
   const cancelEdits = () => {
     setDraftLines(inv.lines);
     setDraftDiscount(inv.discount);
     setDraftTax(inv.tax);
+    setDraftAdvance(inv.advancePaid ?? 0);
     setEditing(false);
     setShowCustom(false);
   };
 
-  const tryDelete = () => {
+  const tryDelete = async () => {
     if (confirmStep === 0) return setConfirmStep(1);
     if (confirmStep === 1) return setConfirmStep(2);
     if (confirmText.trim().toUpperCase() !== "DELETE") return;
-    softDeleteInvoice(inv.id);
-    onChanged();
+    setBusy(true);
+    try {
+      await softDeleteInvoice(inv.id);
+      await onChanged();
+    } finally {
+      setBusy(false);
+    }
   };
 
   return (
@@ -457,7 +514,7 @@ function DetailScreen({
       <div className="mt-4 mb-6 flex items-start justify-between gap-3">
         <div className="min-w-0">
           <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-primary">
-            {formatInvoiceNo(inv.invoiceNo)}
+            {formatInvoiceNo(inv.invoiceNo, profile?.invoice_prefix)}
           </p>
           <h2 className="mt-1 text-3xl font-bold tracking-tight truncate">{inv.customerName}</h2>
           <p className="mt-1 text-sm text-muted-foreground">
@@ -510,9 +567,7 @@ function DetailScreen({
             )}
           </div>
         ))}
-        {liveLines.length === 0 && (
-          <EmptyHint text="No items yet. Add some below." />
-        )}
+        {liveLines.length === 0 && <EmptyHint text="No items yet. Add some below." />}
       </div>
 
       {editing && (
@@ -523,7 +578,7 @@ function DetailScreen({
           <div className="grid grid-cols-2 gap-2">
             {presets.map((s) => (
               <button
-                key={s.name}
+                key={(s.id || s.name) as string}
                 onClick={() => addPreset(s)}
                 className="rounded-2xl bg-secondary p-3 text-left transition hover:bg-accent hover:text-accent-foreground"
               >
@@ -559,53 +614,44 @@ function DetailScreen({
         <Row label="Subtotal" value={`Rs ${subtotal}`} />
         {editing ? (
           <>
-            <div className="mt-2 flex items-center justify-between">
-              <span className="text-sm text-muted-foreground">Discount</span>
-              <input
-                inputMode="numeric"
-                value={draftDiscount || ""}
-                onChange={(e) => setDraftDiscount(Number(e.target.value.replace(/[^0-9]/g, "")) || 0)}
-                placeholder="0"
-                className="w-24 rounded-lg bg-secondary px-3 py-1.5 text-right text-sm font-medium outline-none focus:ring-2 focus:ring-ring"
-              />
-            </div>
-            <div className="mt-2 flex items-center justify-between">
-              <span className="text-sm text-muted-foreground">Taxes</span>
-              <input
-                inputMode="numeric"
-                value={draftTax || ""}
-                onChange={(e) => setDraftTax(Number(e.target.value.replace(/[^0-9]/g, "")) || 0)}
-                placeholder="0"
-                className="w-24 rounded-lg bg-secondary px-3 py-1.5 text-right text-sm font-medium outline-none focus:ring-2 focus:ring-ring"
-              />
-            </div>
+            <NumRow label="Discount" value={draftDiscount} onChange={setDraftDiscount} />
+            <NumRow label="Taxes" value={draftTax} onChange={setDraftTax} />
+            <NumRow label="Advance paid" value={draftAdvance} onChange={setDraftAdvance} />
           </>
         ) : (
           <>
             {liveDiscount > 0 && <Row label="Discount" value={`- Rs ${liveDiscount}`} />}
             {liveTax > 0 && <Row label="Taxes" value={`Rs ${liveTax}`} />}
+            {liveAdvance > 0 && <Row label="Advance paid" value={`- Rs ${liveAdvance}`} />}
           </>
         )}
         <div className="mt-3 flex items-baseline justify-between border-t border-border pt-3">
           <span className="text-sm font-semibold">Total</span>
           <span className="text-2xl font-extrabold">Rs {total}</span>
         </div>
+        {due > 0 && (
+          <div className="mt-1 flex items-baseline justify-between">
+            <span className="text-xs font-semibold text-destructive">Due</span>
+            <span className="text-sm font-bold text-destructive">Rs {due}</span>
+          </div>
+        )}
       </div>
 
       {!isDeleted && editing && (
         <div className="mt-6 flex gap-2">
           <button
             onClick={cancelEdits}
+            disabled={busy}
             className="flex-1 rounded-full bg-secondary py-3 text-sm font-semibold text-secondary-foreground"
           >
             Cancel
           </button>
           <button
             onClick={saveEdits}
-            disabled={draftLines.length === 0}
+            disabled={busy || draftLines.length === 0}
             className="flex-1 rounded-full bg-primary py-3 text-sm font-semibold text-primary-foreground disabled:opacity-40"
           >
-            Save changes
+            {busy ? "Saving…" : "Save changes"}
           </button>
         </div>
       )}
@@ -614,13 +660,13 @@ function DetailScreen({
         <div className="mt-6 space-y-3">
           <div className="flex gap-2">
             <button
-              onClick={() => generateInvoicePDF(inv)}
+              onClick={() => generateInvoicePDF(inv, profile)}
               className="flex-1 rounded-full bg-primary py-3.5 text-base font-semibold text-primary-foreground shadow-pop"
             >
               Download PDF
             </button>
             <button
-              onClick={() => void shareInvoicePDF(inv)}
+              onClick={() => void shareInvoicePDF(inv, profile)}
               className="rounded-full border border-border bg-card px-5 py-3.5 text-base font-semibold text-foreground"
               aria-label="Share invoice"
             >
@@ -642,7 +688,8 @@ function DetailScreen({
             ) : (
               <div>
                 <p className="mb-2 text-xs text-muted-foreground">
-                  Type <span className="font-mono font-bold">DELETE</span> to move this event to the recycle bin.
+                  Type <span className="font-mono font-bold">DELETE</span> to move this event to
+                  the recycle bin.
                 </p>
                 <input
                   autoFocus
@@ -662,7 +709,7 @@ function DetailScreen({
                     Cancel
                   </button>
                   <button
-                    disabled={confirmText.trim().toUpperCase() !== "DELETE"}
+                    disabled={busy || confirmText.trim().toUpperCase() !== "DELETE"}
                     onClick={tryDelete}
                     className="flex-1 rounded-full bg-destructive py-2.5 text-sm font-semibold text-destructive-foreground disabled:opacity-40"
                   >
@@ -678,6 +725,29 @@ function DetailScreen({
   );
 }
 
+function NumRow({
+  label,
+  value,
+  onChange,
+}: {
+  label: string;
+  value: number;
+  onChange: (v: number) => void;
+}) {
+  return (
+    <div className="mt-2 flex items-center justify-between">
+      <span className="text-sm text-muted-foreground">{label}</span>
+      <input
+        inputMode="numeric"
+        value={value || ""}
+        onChange={(e) => onChange(Number(e.target.value.replace(/[^0-9]/g, "")) || 0)}
+        placeholder="0"
+        className="w-24 rounded-lg bg-secondary px-3 py-1.5 text-right text-sm font-medium outline-none focus:ring-2 focus:ring-ring"
+      />
+    </div>
+  );
+}
+
 /* ---------- Bin ---------- */
 
 function BinScreen({
@@ -687,7 +757,7 @@ function BinScreen({
 }: {
   items: Invoice[];
   onBack: () => void;
-  onChange: () => void;
+  onChange: () => void | Promise<void>;
 }) {
   return (
     <div>
@@ -701,10 +771,10 @@ function BinScreen({
         </div>
         {items.length > 0 && (
           <button
-            onClick={() => {
+            onClick={async () => {
               if (confirm("Permanently delete everything in the bin?")) {
-                emptyBin();
-                onChange();
+                await emptyBin();
+                await onChange();
               }
             }}
             className="text-xs font-semibold text-destructive"
@@ -733,19 +803,19 @@ function BinScreen({
               </div>
               <div className="mt-3 flex gap-2">
                 <button
-                  onClick={() => {
-                    restoreInvoice(i.id);
-                    onChange();
+                  onClick={async () => {
+                    await restoreInvoice(i.id);
+                    await onChange();
                   }}
                   className="flex-1 rounded-full bg-secondary py-2 text-xs font-semibold"
                 >
                   Restore
                 </button>
                 <button
-                  onClick={() => {
+                  onClick={async () => {
                     if (confirm("Permanently delete this event?")) {
-                      permanentlyDelete(i.id);
-                      onChange();
+                      await permanentlyDeleteInvoice(i.id);
+                      await onChange();
                     }
                   }}
                   className="flex-1 rounded-full bg-destructive/10 py-2 text-xs font-semibold text-destructive"
@@ -763,23 +833,38 @@ function BinScreen({
 
 /* ---------- Manage items (presets) ---------- */
 
-function ManageItemsScreen({ onBack }: { onBack: () => void }) {
-  const [custom, setCustom] = useState<PresetItem[]>(() => loadCustomItems());
+function ManageItemsScreen({
+  presets,
+  onBack,
+  onChange,
+}: {
+  presets: PresetItem[];
+  onBack: () => void;
+  onChange: () => void | Promise<void>;
+}) {
+  const custom = presets.filter((p) => !!p.id); // cloud rows have id, built-ins don't
   const [name, setName] = useState("");
   const [rate, setRate] = useState("");
   const [unit, setUnit] = useState("fixed");
+  const [busy, setBusy] = useState(false);
 
-  const commit = (next: PresetItem[]) => {
-    setCustom(next);
-    saveCustomItems(next);
+  const add = async () => {
+    if (!name.trim() || !(Number(rate) > 0)) return;
+    setBusy(true);
+    try {
+      await addCustomService({ name: name.trim(), rate: Number(rate), unit });
+      setName("");
+      setRate("");
+      setUnit("fixed");
+      await onChange();
+    } finally {
+      setBusy(false);
+    }
   };
 
-  const add = () => {
-    if (!name.trim() || !(Number(rate) > 0)) return;
-    commit([...custom, { name: name.trim(), rate: Number(rate), unit }]);
-    setName("");
-    setRate("");
-    setUnit("fixed");
+  const removeItem = async (id: string) => {
+    await removeCustomService(id);
+    await onChange();
   };
 
   return (
@@ -791,7 +876,7 @@ function ManageItemsScreen({ onBack }: { onBack: () => void }) {
         </p>
         <h2 className="mt-1 text-3xl font-bold tracking-tight">Items</h2>
         <p className="mt-1 text-sm text-muted-foreground">
-          Add reusable services that show up under Quick Add.
+          Add reusable services that show up under Quick Add. Synced across your devices.
         </p>
       </div>
 
@@ -802,7 +887,9 @@ function ManageItemsScreen({ onBack }: { onBack: () => void }) {
         {BUILTIN_SERVICES.map((s) => (
           <div key={s.name} className="rounded-2xl bg-secondary p-3">
             <div className="text-sm font-semibold">{s.name}</div>
-            <div className="text-xs text-muted-foreground">Rs {s.rate} · {s.unit}</div>
+            <div className="text-xs text-muted-foreground">
+              Rs {s.rate} · {s.unit}
+            </div>
           </div>
         ))}
       </div>
@@ -814,14 +901,19 @@ function ManageItemsScreen({ onBack }: { onBack: () => void }) {
         {custom.length === 0 ? (
           <EmptyHint text="No custom items yet." />
         ) : (
-          custom.map((s, i) => (
-            <div key={i} className="flex items-center justify-between rounded-2xl bg-card p-3 shadow-soft">
+          custom.map((s) => (
+            <div
+              key={s.id}
+              className="flex items-center justify-between rounded-2xl bg-card p-3 shadow-soft"
+            >
               <div>
                 <div className="text-sm font-semibold">{s.name}</div>
-                <div className="text-xs text-muted-foreground">Rs {s.rate} · {s.unit}</div>
+                <div className="text-xs text-muted-foreground">
+                  Rs {s.rate} · {s.unit}
+                </div>
               </div>
               <button
-                onClick={() => commit(custom.filter((_, j) => j !== i))}
+                onClick={() => removeItem(s.id!)}
                 className="text-muted-foreground hover:text-destructive"
                 aria-label="Remove"
               >
@@ -857,10 +949,10 @@ function ManageItemsScreen({ onBack }: { onBack: () => void }) {
         </div>
         <button
           onClick={add}
-          disabled={!name.trim() || !(Number(rate) > 0)}
+          disabled={busy || !name.trim() || !(Number(rate) > 0)}
           className="w-full rounded-full bg-primary py-2.5 text-sm font-semibold text-primary-foreground disabled:opacity-40"
         >
-          Save item
+          {busy ? "Saving…" : "Save item"}
         </button>
       </div>
     </div>
@@ -938,14 +1030,15 @@ function CustomerStep({
 
 function ServicesStep({
   draft,
+  presets,
   onBack,
   onNext,
 }: {
   draft: Invoice;
+  presets: PresetItem[];
   onBack: () => void;
   onNext: (d: Invoice) => void;
 }) {
-  const presets = useMemo(() => getAllPresets(), []);
   const [lines, setLines] = useState<ServiceLine[]>(draft.lines.length ? draft.lines : []);
   const [showCustom, setShowCustom] = useState(false);
 
@@ -998,7 +1091,7 @@ function ServicesStep({
       <div className="grid grid-cols-2 gap-2">
         {presets.map((s) => (
           <button
-            key={s.name}
+            key={(s.id || s.name) as string}
             onClick={() => addPreset(s)}
             className="rounded-2xl bg-secondary p-3 text-left transition hover:bg-accent hover:text-accent-foreground"
           >
@@ -1107,19 +1200,27 @@ function CustomServiceForm({
 
 function ReviewStep({
   draft,
+  profile,
+  saving,
   onBack,
   onConfirm,
   onDiscount,
   onTax,
+  onAdvance,
 }: {
   draft: Invoice;
+  profile: import("@/lib/cloud-storage").BusinessProfile | null;
+  saving: boolean;
   onBack: () => void;
   onConfirm: () => void;
   onDiscount: (v: number) => void;
   onTax: (v: number) => void;
+  onAdvance: (v: number) => void;
 }) {
   const subtotal = draft.lines.reduce((s, l) => s + l.rate * l.qty, 0);
   const total = subtotal - draft.discount + (draft.tax || 0);
+  const advance = draft.advancePaid ?? 0;
+  const due = Math.max(0, total - advance);
 
   return (
     <StepShell step={3} total={3} title="Billing" subtitle="Review and generate the invoice." onBack={onBack}>
@@ -1140,7 +1241,9 @@ function ReviewStep({
                 year: "numeric",
               })}
             </div>
-            <div className="mt-1 text-xs text-muted-foreground">{formatInvoiceNo(draft.invoiceNo)}</div>
+            <div className="mt-1 text-xs text-muted-foreground">
+              {formatInvoiceNo(draft.invoiceNo, profile?.invoice_prefix)}
+            </div>
           </div>
         </div>
 
@@ -1163,33 +1266,26 @@ function ReviewStep({
         <div className="my-4 h-px bg-border" />
 
         <Row label="Subtotal" value={`Rs ${subtotal}`} />
-        <div className="mt-2 flex items-center justify-between">
-          <span className="text-sm text-muted-foreground">Discount</span>
-          <input
-            inputMode="numeric"
-            value={draft.discount || ""}
-            onChange={(e) => onDiscount(Number(e.target.value.replace(/[^0-9]/g, "")) || 0)}
-            placeholder="0"
-            className="w-24 rounded-lg bg-secondary px-3 py-1.5 text-right text-sm font-medium outline-none focus:ring-2 focus:ring-ring"
-          />
-        </div>
-        <div className="mt-2 flex items-center justify-between">
-          <span className="text-sm text-muted-foreground">Taxes</span>
-          <input
-            inputMode="numeric"
-            value={draft.tax || ""}
-            onChange={(e) => onTax(Number(e.target.value.replace(/[^0-9]/g, "")) || 0)}
-            placeholder="0"
-            className="w-24 rounded-lg bg-secondary px-3 py-1.5 text-right text-sm font-medium outline-none focus:ring-2 focus:ring-ring"
-          />
-        </div>
+        <NumRow label="Discount" value={draft.discount} onChange={onDiscount} />
+        <NumRow label="Taxes" value={draft.tax} onChange={onTax} />
+        <NumRow label="Advance paid" value={advance} onChange={onAdvance} />
         <div className="mt-4 flex items-baseline justify-between border-t border-border pt-4">
           <span className="text-sm font-semibold">Total</span>
           <span className="text-2xl font-extrabold">Rs {total}</span>
         </div>
+        {due > 0 && (
+          <div className="mt-1 flex items-baseline justify-between">
+            <span className="text-xs font-semibold text-destructive">Balance due</span>
+            <span className="text-sm font-bold text-destructive">Rs {due}</span>
+          </div>
+        )}
       </div>
 
-      <StickyCTA label="Generate & Save PDF" onClick={onConfirm} />
+      <StickyCTA
+        label={saving ? "Saving…" : "Generate & Save PDF"}
+        onClick={onConfirm}
+        disabled={saving}
+      />
     </StepShell>
   );
 }
@@ -1348,7 +1444,7 @@ function DotsIcon() {
 function emptyInvoice(): Invoice {
   return {
     id: typeof crypto !== "undefined" ? crypto.randomUUID() : String(Date.now()),
-    invoiceNo: typeof window !== "undefined" ? nextInvoiceNo() : BUSINESS.invoiceStart,
+    invoiceNo: 0, // allocated server-side on save
     customerName: "",
     eventDate: new Date().toISOString().slice(0, 10),
     phone: "",
@@ -1356,6 +1452,7 @@ function emptyInvoice(): Invoice {
     lines: [],
     discount: 0,
     tax: 0,
+    advancePaid: 0,
     total: 0,
     createdAt: new Date().toISOString(),
   };

@@ -14,13 +14,298 @@ export type Database = {
   }
   public: {
     Tables: {
-      [_ in never]: never
+      customers: {
+        Row: {
+          address: string | null
+          created_at: string
+          id: string
+          name: string
+          notes: string | null
+          phone: string | null
+          updated_at: string
+          user_id: string
+        }
+        Insert: {
+          address?: string | null
+          created_at?: string
+          id?: string
+          name: string
+          notes?: string | null
+          phone?: string | null
+          updated_at?: string
+          user_id: string
+        }
+        Update: {
+          address?: string | null
+          created_at?: string
+          id?: string
+          name?: string
+          notes?: string | null
+          phone?: string | null
+          updated_at?: string
+          user_id?: string
+        }
+        Relationships: []
+      }
+      event_items: {
+        Row: {
+          created_at: string
+          description: string | null
+          event_id: string
+          id: string
+          name: string
+          position: number
+          quantity: number
+          rate: number
+          service_id: string | null
+          total: number
+          unit: string
+          user_id: string
+        }
+        Insert: {
+          created_at?: string
+          description?: string | null
+          event_id: string
+          id?: string
+          name: string
+          position?: number
+          quantity?: number
+          rate?: number
+          service_id?: string | null
+          total?: number
+          unit?: string
+          user_id: string
+        }
+        Update: {
+          created_at?: string
+          description?: string | null
+          event_id?: string
+          id?: string
+          name?: string
+          position?: number
+          quantity?: number
+          rate?: number
+          service_id?: string | null
+          total?: number
+          unit?: string
+          user_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "event_items_event_id_fkey"
+            columns: ["event_id"]
+            isOneToOne: false
+            referencedRelation: "events"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "event_items_service_id_fkey"
+            columns: ["service_id"]
+            isOneToOne: false
+            referencedRelation: "services"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      events: {
+        Row: {
+          advance_paid: number
+          created_at: string
+          customer_address: string | null
+          customer_id: string | null
+          customer_name: string
+          customer_phone: string | null
+          deleted_at: string | null
+          discount: number
+          due_amount: number
+          event_date: string
+          id: string
+          notes: string | null
+          status: string
+          subtotal: number
+          tax: number
+          total: number
+          updated_at: string
+          user_id: string
+        }
+        Insert: {
+          advance_paid?: number
+          created_at?: string
+          customer_address?: string | null
+          customer_id?: string | null
+          customer_name: string
+          customer_phone?: string | null
+          deleted_at?: string | null
+          discount?: number
+          due_amount?: number
+          event_date: string
+          id?: string
+          notes?: string | null
+          status?: string
+          subtotal?: number
+          tax?: number
+          total?: number
+          updated_at?: string
+          user_id: string
+        }
+        Update: {
+          advance_paid?: number
+          created_at?: string
+          customer_address?: string | null
+          customer_id?: string | null
+          customer_name?: string
+          customer_phone?: string | null
+          deleted_at?: string | null
+          discount?: number
+          due_amount?: number
+          event_date?: string
+          id?: string
+          notes?: string | null
+          status?: string
+          subtotal?: number
+          tax?: number
+          total?: number
+          updated_at?: string
+          user_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "events_customer_id_fkey"
+            columns: ["customer_id"]
+            isOneToOne: false
+            referencedRelation: "customers"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      invoices: {
+        Row: {
+          created_at: string
+          event_id: string
+          id: string
+          invoice_number: number
+          pdf_url: string | null
+          user_id: string
+        }
+        Insert: {
+          created_at?: string
+          event_id: string
+          id?: string
+          invoice_number: number
+          pdf_url?: string | null
+          user_id: string
+        }
+        Update: {
+          created_at?: string
+          event_id?: string
+          id?: string
+          invoice_number?: number
+          pdf_url?: string | null
+          user_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "invoices_event_id_fkey"
+            columns: ["event_id"]
+            isOneToOne: true
+            referencedRelation: "events"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      profiles: {
+        Row: {
+          address: string | null
+          alt_phone: string | null
+          business_name: string
+          created_at: string
+          email: string | null
+          id: string
+          invoice_prefix: string
+          logo_url: string | null
+          next_invoice_no: number
+          owner_name: string | null
+          phone: string | null
+          terms: string | null
+          updated_at: string
+          upi_id: string | null
+        }
+        Insert: {
+          address?: string | null
+          alt_phone?: string | null
+          business_name?: string
+          created_at?: string
+          email?: string | null
+          id: string
+          invoice_prefix?: string
+          logo_url?: string | null
+          next_invoice_no?: number
+          owner_name?: string | null
+          phone?: string | null
+          terms?: string | null
+          updated_at?: string
+          upi_id?: string | null
+        }
+        Update: {
+          address?: string | null
+          alt_phone?: string | null
+          business_name?: string
+          created_at?: string
+          email?: string | null
+          id?: string
+          invoice_prefix?: string
+          logo_url?: string | null
+          next_invoice_no?: number
+          owner_name?: string | null
+          phone?: string | null
+          terms?: string | null
+          updated_at?: string
+          upi_id?: string | null
+        }
+        Relationships: []
+      }
+      services: {
+        Row: {
+          created_at: string
+          description: string | null
+          id: string
+          is_archived: boolean
+          name: string
+          price: number
+          pricing_type: string
+          unit: string
+          user_id: string
+        }
+        Insert: {
+          created_at?: string
+          description?: string | null
+          id?: string
+          is_archived?: boolean
+          name: string
+          price?: number
+          pricing_type?: string
+          unit?: string
+          user_id: string
+        }
+        Update: {
+          created_at?: string
+          description?: string | null
+          id?: string
+          is_archived?: boolean
+          name?: string
+          price?: number
+          pricing_type?: string
+          unit?: string
+          user_id?: string
+        }
+        Relationships: []
+      }
     }
     Views: {
       [_ in never]: never
     }
     Functions: {
-      [_ in never]: never
+      allocate_invoice_number: { Args: { _user_id: string }; Returns: number }
     }
     Enums: {
       [_ in never]: never
